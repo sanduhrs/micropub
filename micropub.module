@@ -1,0 +1,231 @@
+<?php
+/**
+ * @file
+ * Micropub endpoint to store nodes
+ */
+
+/**
+ * Implements hook_init().
+ */
+function micropub_init() {
+  drupal_add_html_head_link(array(
+    'rel' => 'authorization_endpoint',
+    'href' => 'https://indieauth.com/auth',
+  ));
+  drupal_add_html_head_link(array(
+    'rel' => 'token_endpoint',
+    'href' => 'https://tokens.indieauth.com/token',
+  ));
+  drupal_add_html_head_link(array(
+    'rel' => 'micropub',
+    'href' => 'http://stefan-auditor.de/micropub',
+  ));
+}
+
+/**
+ * Implements hook_menu().
+ */
+function micropub_menu() {
+  $items['micropub'] = array(
+    'page callback' => 'micropub_endpoint',
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Endpoint; Menu callback.
+ */
+function micropub_endpoint() {
+  # Licensed under a CC0 1.0 Universal (CC0 1.0) Public Domain Dedication
+  # http://creativecommons.org/publicdomain/zero/1.0/
+  #
+  # Taken from https://gist.github.com/adactio/8168e6b78da7b16a4644
+
+  $mysite = url('/', array('absolute' => TRUE));
+  // TODO: Make own endpoint implementation
+  // see https://indiewebcamp.com/token-endpoint
+  $token_endpoint = 'https://tokens.indieauth.com/token';
+
+  $_HEADERS = array();
+  foreach(getallheaders() as $name => $value) {
+    $_HEADERS[$name] = $value;
+  }
+
+  if (!isset($_HEADERS['Authorization'])) {
+    drupal_add_http_header('Status', '401 Unauthorized');
+    echo 'Missing "Authorization" header.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+  if (!isset($_POST['h'])) {
+    drupal_add_http_header('Status', '400 Bad Request');
+    echo 'Missing "h" value.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+
+  $options = array(
+    CURLOPT_URL => $token_endpoint,
+    CURLOPT_HTTPGET => TRUE,
+    CURLOPT_USERAGENT => $mysite,
+    CURLOPT_TIMEOUT => 5,
+    CURLOPT_RETURNTRANSFER => TRUE,
+    CURLOPT_HEADER => FALSE,
+    CURLOPT_HTTPHEADER => array(
+      'Content-type: application/x-www-form-urlencoded',
+      'Authorization: ' . $_HEADERS['Authorization']
+    )
+  );
+
+  $curl = curl_init();
+  curl_setopt_array($curl, $options);
+  $source = curl_exec($curl);
+  curl_close($curl);
+
+  parse_str($source, $values);
+
+  if (!isset($values['me'])) {
+    drupal_add_http_header('Status', '400 Bad Request');
+    echo 'Missing "me" value in authentication token.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+  if (!isset($values['scope'])) {
+    drupal_add_http_header('Status', '400 Bad Request');
+    echo 'Missing "scope" value in authentication token.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+  if (substr($values['me'], -1) != '/') {
+    $values['me'].= '/';
+  }
+  if (substr($mysite, -1) != '/') {
+    $mysite.= '/';
+  }
+  if (strtolower($values['me']) != strtolower($mysite)) {
+    drupal_add_http_header('Status', '403 Forbidden');
+    echo 'Mismatching "me" value in authentication token.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+  if (!stristr($values['scope'], 'post')) {
+    drupal_add_http_header('Status', '403 Forbidden');
+    echo 'Missing "post" value in "scope".';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+  if (!isset($_POST['content'])) {
+    drupal_add_http_header('Status', '400 Bad Request');
+    echo 'Missing "content" value.';
+
+    // Perform end-of-request tasks.
+    drupal_page_footer();
+    exit;
+  }
+
+  /* Everything's cool. Do something with the $_POST variables
+     (such as $_POST['content'], $_POST['category'], $_POST['location'], etc.)
+     e.g. create a new entry, store it in a database, whatever. */
+
+  $node = new stdClass();
+  $node->uid = 1;
+  $node->type = 'article';
+  $node->language = LANGUAGE_NONE;
+  node_object_prepare($node);
+
+  // Create the slug.
+  if (isset($_POST['slug'])) {
+    $slug = check_plain($_POST['slug']);
+    $node->title = $slug;
+  }
+  else {
+    $slug = truncate_utf8(check_plain($_POST['content']), 100, TRUE, TRUE);
+    $node->title = $slug;
+  }
+
+  // Get the content.
+  if (isset($_POST['content'])) {
+    $node->body[LANGUAGE_NONE][0]['value'] = check_plain($_POST['content']);
+  }
+
+  // Get the categories.
+  if (isset($_POST['category'])) {
+    $vocabulary_name = 'tags';
+    $vocabulary = taxonomy_vocabulary_machine_name_load($vocabulary_name);
+    $terms = explode(',', check_plain($_POST['category']));
+    foreach ($terms as $term_name) {
+      $term_name = trim($term_name);
+      $terms = taxonomy_get_term_by_name($term_name, $vocabulary->machine_name);
+      $term = array_shift($terms);
+      if (!isset($term->tid)) {
+        $term = new stdClass();
+        $term->vid = $vocabulary->vid;
+        $term->vocabulary_machine_name = $vocabulary->machine_name;
+        $term->name = $term_name;
+        taxonomy_term_save($term);
+      }
+      $node->field_tags[LANGUAGE_NONE][]['tid'] = $term->tid;
+    }
+  }
+
+  // Set the in-reply-to.
+  if (isset($_POST['in-reply-to'])) {
+    $node->field_in_reply_to[LANGUAGE_NONE][0]['url'] = check_plain($_POST['in-reply-to']);
+  }
+
+  // Set the location.
+  if (isset($_POST['location'])) {
+    $location = check_plain($_POST['location']);
+    list($geo, $u) = explode(';', $location);
+    list($lat, $lon) = explode(',', substr($geo, 4));
+    $point = array(
+      'geom' => '',
+      'geo_type' => 'point',
+      'lat' => $lat,
+      'lon' => $lon,
+      'top' => $lat,
+      'bottom' => $lat,
+      'right' => $lon,
+      'left' => $lon,
+    );
+    $node->field_geo[LANGUAGE_NONE][] = $point;
+  }
+
+  // Save the node.
+  $node = node_submit($node);
+  node_save($node);
+
+  watchdog('Micropub', print_r($_POST, TRUE));
+
+  // Generate the response.
+  if (isset($node->nid))  {
+    watchdog('Micropub', 'Micropub has been saved.');
+
+    $url = url('node/' . $node->nid, array('absolute' => TRUE));
+    drupal_add_http_header('Status', '201 Created');
+    drupal_add_http_header('Location', $url);
+  }
+  else {
+    watchdog('Micropub', 'Could not save Micropub.', array(), WATCHDOG_ERROR);
+
+    drupal_add_http_header('Status', '400 Bad Request');
+  }
+
+  // Perform end-of-request tasks.
+  drupal_page_footer();
+  exit;
+}
