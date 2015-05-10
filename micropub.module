@@ -141,8 +141,11 @@ function micropub_endpoint() {
      (such as $_POST['content'], $_POST['category'], $_POST['location'], etc.)
      e.g. create a new entry, store it in a database, whatever. */
 
+  $account = user_load(1);
+
   $node = new stdClass();
-  $node->uid = 1;
+  $node->uid = $account->uid;
+  $node->name = $account->name;
   $node->type = 'article';
   $node->language = LANGUAGE_NONE;
   node_object_prepare($node);
